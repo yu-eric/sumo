@@ -77,45 +77,9 @@ When run without arguments, the application will:
 3. Show Makuuchi division results
 4. Start in the daily matches (torikumi) view
 
-## Basho Schedule
-
-Sumo tournaments (basho) are held six times per year:
-- January (Hatsu basho)
-- March (Haru basho)
-- May (Natsu basho)
-- July (Nagoya basho)
-- September (Aki basho)
-- November (Kyushu basho)
-
-Each basho runs for 15 days.
-
 ## API Data Source
 
-This application uses the Sumo API (https://www.sumo-api.com/) to fetch tournament data. The API provides:
-- Basho information including yusho (championship) and sansho (special prizes)
-- Banzuke (rankings) for each division
-- Torikumi (daily match results) for each day and division
-
-## Dependencies
-
-- `ratatui` - Terminal UI library
-- `crossterm` - Cross-platform terminal manipulation
-- `tokio` - Async runtime
-- `reqwest` - HTTP client for API requests
-- `serde` - Serialization/deserialization
-- `chrono` - Date and time handling
-- `clap` - Command line argument parsing
-- `anyhow` - Error handling
-
-## Error Handling
-
-The application gracefully handles various error conditions:
-- Network connectivity issues
-- Missing or invalid tournament data
-- Invalid command line arguments
-- Terminal display errors
-
-If data cannot be loaded, appropriate warning messages are displayed, and the application continues to run with the available data.
+This app uses the Sumo API (https://www.sumo-api.com/) to fetch tournament data.
 
 ## Building for Release
 

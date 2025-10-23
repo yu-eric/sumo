@@ -326,6 +326,15 @@ fn render_banzuke(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         let start_index = app.scroll_offset;
         let end_index = (start_index + visible_height).min(banzuke.len());
         
+        // Determine total days based on division
+        // Makuuchi and Juryo have 15 days, Makushita and below have 7 days
+        let total_days = if app.division.to_lowercase().contains("makuuchi") 
+            || app.division.to_lowercase().contains("juryo") {
+            15u8
+        } else {
+            7u8
+        };
+        
         let rows: Vec<Row> = banzuke
             .iter()
             .enumerate()
@@ -338,11 +347,30 @@ fn render_banzuke(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
                     Style::default()
                 };
 
+                // Calculate W-L-Absent from the record
+                let (wins, losses, absent) = if let Some(records) = &entry.record {
+                    let mut w = 0;
+                    let mut l = 0;
+                    for r in records {
+                        match r.result.as_str() {
+                            "win" => w += 1,
+                            "loss" => l += 1,
+                            _ => {}, // fusen-loss, fusen-win, or other - don't count as absent
+                        }
+                    }
+                    // Calculate absent as total days minus wins and losses
+                    let a = total_days.saturating_sub(w).saturating_sub(l);
+                    (w, l, a)
+                } else {
+                    (0, 0, 0)
+                };
+                
+                let result_str = format!("{}-{}-{}", wins, losses, absent);
+
                 Row::new(vec![
                     Cell::from(entry.rank.clone()),
                     Cell::from(entry.shikona_en.clone()),
-                    Cell::from(format!("{} ({})", entry.side, entry.rank_value)),
-                    Cell::from(format!("{} matches", entry.record.as_ref().map(|r| r.len()).unwrap_or(0))),
+                    Cell::from(result_str),
                 ]).style(style)
             })
             .collect();
@@ -350,14 +378,13 @@ fn render_banzuke(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         let table = Table::new(
             rows,
             [
-                Constraint::Percentage(25),  // Increased from 15% to 25% for rank
-                Constraint::Percentage(25),  // Decreased from 30% to 25% for wrestler name
-                Constraint::Percentage(25),  // Same for side info
-                Constraint::Percentage(25),  // Decreased from 30% to 25% for matches
+                Constraint::Percentage(40),  // Rank
+                Constraint::Percentage(40),  // Wrestler name
+                Constraint::Percentage(20),  // Result (W-L-A)
             ],
         )
         .header(
-            Row::new(vec!["Rank", "Wrestler", "Side & Value", "Matches"])
+            Row::new(vec!["Rank", "Wrestler", "Result"])
                 .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
         )
         .block(Block::default().borders(Borders::ALL).title("Banzuke"));

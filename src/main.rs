@@ -107,8 +107,33 @@ async fn load_data(
     // Load banzuke (rankings)
     match api.get_banzuke(basho_id, division).await {
         Ok(banzuke_response) => {
-            let mut all_entries = banzuke_response.east;
-            all_entries.extend(banzuke_response.west);
+            // Sort and interleave east and west wrestlers by rank
+            let mut all_entries = Vec::new();
+            
+            // Group by rank_value
+            use std::collections::BTreeMap;
+            let mut by_rank: BTreeMap<u32, (Option<api::BanzukeEntry>, Option<api::BanzukeEntry>)> = BTreeMap::new();
+            
+            for entry in banzuke_response.east {
+                let rank = entry.rank_value;
+                by_rank.entry(rank).or_insert((None, None)).0 = Some(entry);
+            }
+            
+            for entry in banzuke_response.west {
+                let rank = entry.rank_value;
+                by_rank.entry(rank).or_insert((None, None)).1 = Some(entry);
+            }
+            
+            // Add entries in order: east first, then west for each rank
+            for (_rank_value, (east, west)) in by_rank {
+                if let Some(e) = east {
+                    all_entries.push(e);
+                }
+                if let Some(w) = west {
+                    all_entries.push(w);
+                }
+            }
+            
             eprintln!("✓ Loaded {} wrestlers in banzuke", all_entries.len());
             app.set_banzuke(all_entries);
         },
