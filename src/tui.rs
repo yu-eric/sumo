@@ -1,0 +1,423 @@
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{
+    backend::{Backend, CrosstermBackend},
+    layout::{Alignment, Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph, Table, Row, Cell},
+    Frame, Terminal,
+};
+use std::io;
+use crate::api::{Basho, BanzukeEntry, TorikumiEntry};
+
+pub struct App {
+    pub should_quit: bool,
+    pub basho: Option<Basho>,
+    pub banzuke: Option<Vec<BanzukeEntry>>,
+    pub torikumi: Option<Vec<TorikumiEntry>>,
+    pub current_view: AppView,
+    pub selected_index: usize,
+    pub division: String,
+    pub day: u8,
+    pub basho_id: String,
+    pub show_help: bool,
+    pub scroll_offset: usize,
+}
+
+#[derive(Clone, PartialEq)]
+pub enum AppView {
+    Torikumi,
+    Banzuke,
+    BashoInfo,
+}
+
+impl App {
+    pub fn new(basho_id: String, division: String, day: u8) -> Self {
+        Self {
+            should_quit: false,
+            basho: None,
+            banzuke: None,
+            torikumi: None,
+            current_view: AppView::Torikumi,
+            selected_index: 0,
+            division,
+            day,
+            basho_id,
+            show_help: false,
+            scroll_offset: 0,
+        }
+    }
+
+    pub fn set_basho(&mut self, basho: Basho) {
+        self.basho = Some(basho);
+    }
+
+    pub fn set_banzuke(&mut self, banzuke: Vec<BanzukeEntry>) {
+        self.banzuke = Some(banzuke);
+    }
+
+    pub fn set_torikumi(&mut self, torikumi: Vec<TorikumiEntry>) {
+        self.torikumi = Some(torikumi);
+    }
+
+    pub fn on_key(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('h') | KeyCode::F(1) => self.show_help = !self.show_help,
+            KeyCode::Char('1') => {
+                self.current_view = AppView::Torikumi;
+                self.selected_index = 0;
+                self.scroll_offset = 0;
+            },
+            KeyCode::Char('2') => {
+                self.current_view = AppView::Banzuke;
+                self.selected_index = 0;
+                self.scroll_offset = 0;
+            },
+            KeyCode::Char('3') => {
+                self.current_view = AppView::BashoInfo;
+                self.selected_index = 0;
+                self.scroll_offset = 0;
+            },
+            KeyCode::Up => {
+                if self.selected_index > 0 {
+                    self.selected_index -= 1;
+                    if self.selected_index < self.scroll_offset {
+                        self.scroll_offset = self.selected_index;
+                    }
+                }
+            }
+            KeyCode::Down => {
+                let max_index = match self.current_view {
+                    AppView::Torikumi => self.torikumi.as_ref().map(|t| t.len()).unwrap_or(0),
+                    AppView::Banzuke => self.banzuke.as_ref().map(|b| b.len()).unwrap_or(0),
+                    AppView::BashoInfo => 0,
+                };
+                if self.selected_index + 1 < max_index {
+                    self.selected_index += 1;
+                    // Adjust scroll if selection goes beyond visible area (assume 10 visible items)
+                    let visible_items = 10;
+                    if self.selected_index >= self.scroll_offset + visible_items {
+                        self.scroll_offset = self.selected_index - visible_items + 1;
+                    }
+                }
+            }
+            KeyCode::Esc => self.show_help = false,
+            _ => {}
+        }
+    }
+}
+
+pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
+    loop {
+        terminal.draw(|f| ui(f, &mut app))?;
+
+        if let Event::Key(key) = event::read()? {
+            app.on_key(key.code);
+        }
+
+        if app.should_quit {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+fn ui(f: &mut Frame, app: &mut App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Main content
+            Constraint::Length(3), // Footer
+        ])
+        .split(f.area());
+
+    // Header
+    let basho_date = crate::api::SumoApi::format_basho_date(&app.basho_id);
+    let basho_month: u32 = app.basho_id[4..6].parse().unwrap_or(9);
+    let basho_name = crate::api::SumoApi::get_basho_name(basho_month);
+    
+    let header = Paragraph::new(format!(
+        "{} Results - {} {} - Day {}",
+        basho_name, basho_date, app.division, app.day
+    ))
+    .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+    .alignment(Alignment::Center)
+    .block(Block::default().borders(Borders::ALL).title("Sumo TUI"));
+
+    f.render_widget(header, chunks[0]);
+
+    // Main content
+    match app.current_view {
+        AppView::Torikumi => render_torikumi(f, chunks[1], app),
+        AppView::Banzuke => render_banzuke(f, chunks[1], app),
+        AppView::BashoInfo => render_basho_info(f, chunks[1], app),
+    }
+
+    // Footer
+    let footer_text = "Press 'q' to quit | '1' Torikumi | '2' Banzuke | '3' Basho Info | 'h' Help | ↑↓ Navigate";
+    let footer = Paragraph::new(footer_text)
+        .style(Style::default().fg(Color::Cyan))
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL));
+
+    f.render_widget(footer, chunks[2]);
+
+    // Help popup
+    if app.show_help {
+        render_help_popup(f);
+    }
+}
+
+fn render_torikumi(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    if let Some(torikumi) = &app.torikumi {
+        let visible_height = area.height.saturating_sub(3) as usize; // Account for borders and header
+        let start_index = app.scroll_offset;
+        let end_index = (start_index + visible_height).min(torikumi.len());
+        
+        let rows: Vec<Row> = torikumi
+            .iter()
+            .enumerate()
+            .skip(start_index)
+            .take(end_index - start_index)
+            .map(|(i, match_entry)| {
+                let style = if i == app.selected_index {
+                    Style::default().bg(Color::Yellow).fg(Color::Black)
+                } else {
+                    Style::default()
+                };
+
+                let wrestler1 = match_entry.east_shikona.clone();
+                let wrestler2 = match_entry.west_shikona.clone();
+                let winner = match_entry.winner_en.as_ref().unwrap_or(&"TBD".to_string()).clone();
+                let kimarite = match_entry.kimarite.as_ref().unwrap_or(&"N/A".to_string()).to_string();
+                // Capitalize first letter of kimarite
+                let kimarite = if !kimarite.is_empty() {
+                    let mut chars: Vec<char> = kimarite.chars().collect();
+                    chars[0] = chars[0].to_uppercase().next().unwrap_or(chars[0]);
+                    chars.into_iter().collect()
+                } else {
+                    kimarite
+                };
+
+                Row::new(vec![
+                    Cell::from(wrestler1),
+                    Cell::from("vs"),
+                    Cell::from(wrestler2),
+                    Cell::from(winner),
+                    Cell::from(kimarite),
+                ]).style(style)
+            })
+            .collect();
+
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Percentage(25),
+                Constraint::Percentage(5),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+                Constraint::Percentage(20),
+            ],
+        )
+        .header(
+            Row::new(vec!["Wrestler 1", "", "Wrestler 2", "Winner", "Kimarite"])
+                .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        )
+        .block(Block::default().borders(Borders::ALL).title("Daily Matches"));
+
+        f.render_widget(table, area);
+    } else {
+        let paragraph = Paragraph::new("Loading torikumi data...")
+            .block(Block::default().borders(Borders::ALL).title("Daily Matches"))
+            .alignment(Alignment::Center);
+        f.render_widget(paragraph, area);
+    }
+}
+
+fn render_banzuke(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    if let Some(banzuke) = &app.banzuke {
+        let visible_height = area.height.saturating_sub(3) as usize; // Account for borders and header
+        let start_index = app.scroll_offset;
+        let end_index = (start_index + visible_height).min(banzuke.len());
+        
+        let rows: Vec<Row> = banzuke
+            .iter()
+            .enumerate()
+            .skip(start_index)
+            .take(end_index - start_index)
+            .map(|(i, entry)| {
+                let style = if i == app.selected_index {
+                    Style::default().bg(Color::Yellow).fg(Color::Black)
+                } else {
+                    Style::default()
+                };
+
+                Row::new(vec![
+                    Cell::from(entry.rank.clone()),
+                    Cell::from(entry.shikona_en.clone()),
+                    Cell::from(format!("{} ({})", entry.side, entry.rank_value)),
+                    Cell::from(format!("{} matches", entry.record.as_ref().map(|r| r.len()).unwrap_or(0))),
+                ]).style(style)
+            })
+            .collect();
+
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Percentage(25),  // Increased from 15% to 25% for rank
+                Constraint::Percentage(25),  // Decreased from 30% to 25% for wrestler name
+                Constraint::Percentage(25),  // Same for side info
+                Constraint::Percentage(25),  // Decreased from 30% to 25% for matches
+            ],
+        )
+        .header(
+            Row::new(vec!["Rank", "Wrestler", "Side & Value", "Matches"])
+                .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        )
+        .block(Block::default().borders(Borders::ALL).title("Banzuke"));
+
+        f.render_widget(table, area);
+    } else {
+        let paragraph = Paragraph::new("Loading banzuke data...")
+            .block(Block::default().borders(Borders::ALL).title("Banzuke"))
+            .alignment(Alignment::Center);
+        f.render_widget(paragraph, area);
+    }
+}
+
+fn render_basho_info(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    if let Some(basho) = &app.basho {
+        // Helper function to format date without timestamp
+        let format_date = |date_str: &str| -> String {
+            if let Some(date_part) = date_str.split('T').next() {
+                date_part.to_string()
+            } else {
+                date_str.to_string()
+            }
+        };
+
+        let mut text = vec![
+            Line::from(vec![
+                Span::styled("Location: ", Style::default().fg(Color::Yellow)),
+                Span::raw(&basho.location),
+            ]),
+            Line::from(vec![
+                Span::styled("Start Date: ", Style::default().fg(Color::Yellow)),
+                Span::raw(format_date(&basho.start_date)),
+            ]),
+            Line::from(vec![
+                Span::styled("End Date: ", Style::default().fg(Color::Yellow)),
+                Span::raw(format_date(&basho.end_date)),
+            ]),
+        ];
+
+        if let Some(yusho_list) = &basho.yusho {
+            text.push(Line::from(""));
+            text.push(Line::from(vec![
+                Span::styled("Yusho Winners:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]));
+            
+            for yusho in yusho_list {
+                text.push(Line::from(vec![
+                    Span::styled("  Division: ", Style::default().fg(Color::Green)),
+                    Span::raw(&yusho.division),
+                ]));
+                text.push(Line::from(vec![
+                    Span::styled("  Winner: ", Style::default().fg(Color::Green)),
+                    Span::raw(&yusho.shikona_en),
+                ]));
+                text.push(Line::from(""));
+            }
+        }
+
+        let paragraph = Paragraph::new(text)
+            .block(Block::default().borders(Borders::ALL).title("Basho Information"))
+            .wrap(ratatui::widgets::Wrap { trim: true });
+
+        f.render_widget(paragraph, area);
+    } else {
+        let paragraph = Paragraph::new("Loading basho information...")
+            .block(Block::default().borders(Borders::ALL).title("Basho Information"))
+            .alignment(Alignment::Center);
+        f.render_widget(paragraph, area);
+    }
+}
+
+fn render_help_popup(f: &mut Frame) {
+    let area = centered_rect(60, 50, f.area());
+    f.render_widget(Clear, area);
+
+    let help_text = vec![
+        Line::from("Sumo TUI Help"),
+        Line::from(""),
+        Line::from("Navigation:"),
+        Line::from("  ↑/↓     - Navigate lists"),
+        Line::from("  1       - View daily matches (torikumi)"),
+        Line::from("  2       - View rankings (banzuke)"),
+        Line::from("  3       - View basho information"),
+        Line::from("  h/F1    - Toggle this help"),
+        Line::from("  q       - Quit application"),
+        Line::from("  Esc     - Close help"),
+        Line::from(""),
+        Line::from("Command line options:"),
+        Line::from("  --basho YYYYMM    - Specify basho"),
+        Line::from("  --day N           - Specify day (1-15)"),
+        Line::from("  --division DIV    - Specify division"),
+        Line::from("  --banzuke         - Start in banzuke view"),
+    ];
+
+    let paragraph = Paragraph::new(help_text)
+        .block(Block::default().borders(Borders::ALL).title("Help"))
+        .wrap(ratatui::widgets::Wrap { trim: true });
+
+    f.render_widget(paragraph, area);
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+pub fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<io::Stdout>>> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
+    Ok(terminal)
+}
+
+pub fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::Result<()> {
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+    Ok(())
+}
