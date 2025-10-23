@@ -13,6 +13,7 @@ use ratatui::{
 };
 use std::io;
 use crate::api::{Basho, BanzukeEntry, TorikumiEntry};
+use std::collections::HashMap;
 
 pub struct App {
     pub should_quit: bool,
@@ -26,6 +27,8 @@ pub struct App {
     pub basho_id: String,
     pub show_help: bool,
     pub scroll_offset: usize,
+    // Map rikishi id -> (wins, losses)
+    pub record_map: HashMap<u32, (u8, u8)>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -49,6 +52,7 @@ impl App {
             basho_id,
             show_help: false,
             scroll_offset: 0,
+            record_map: HashMap::new(),
         }
     }
 
@@ -57,11 +61,37 @@ impl App {
     }
 
     pub fn set_banzuke(&mut self, banzuke: Vec<BanzukeEntry>) {
+        // Store banzuke
         self.banzuke = Some(banzuke);
+        // Recompute records map
+        self.recompute_records();
     }
 
     pub fn set_torikumi(&mut self, torikumi: Vec<TorikumiEntry>) {
         self.torikumi = Some(torikumi);
+    }
+
+    fn recompute_records(&mut self) {
+        self.record_map.clear();
+        if let Some(list) = &self.banzuke {
+            for entry in list {
+                let mut wins: u8 = 0;
+                let mut losses: u8 = 0;
+                if let Some(records) = &entry.record {
+                    for r in records {
+                        let s = r.result.trim();
+                        let sl = s.to_lowercase();
+                        // Heuristics: support common encodings of results
+                        if sl == "w" || sl == "win" || sl.contains("win") || s == "○" {
+                            wins = wins.saturating_add(1);
+                        } else if sl == "l" || sl == "loss" || sl.contains("loss") || s == "●" {
+                            losses = losses.saturating_add(1);
+                        }
+                    }
+                }
+                self.record_map.insert(entry.rikishi_id, (wins, losses));
+            }
+        }
     }
 
     pub fn on_key(&mut self, key: KeyCode) {
@@ -194,9 +224,9 @@ fn render_torikumi(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
                     Style::default()
                 };
 
-                let wrestler1 = match_entry.east_shikona.clone();
-                let wrestler2 = match_entry.west_shikona.clone();
-                let winner = match_entry.winner_en.as_ref().unwrap_or(&"TBD".to_string()).clone();
+                let east_name = match_entry.east_shikona.clone();
+                let west_name = match_entry.west_shikona.clone();
+                let winner_opt = match_entry.winner_en.as_ref();
                 let kimarite = match_entry.kimarite.as_ref().unwrap_or(&"N/A".to_string()).to_string();
                 // Capitalize first letter of kimarite
                 let kimarite = if !kimarite.is_empty() {
@@ -207,11 +237,36 @@ fn render_torikumi(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
                     kimarite
                 };
 
+                // Compose "Name (Rank) (W-L)"
+                let (ew, el) = app.record_map.get(&match_entry.east_id).copied().unwrap_or((0, 0));
+                let (ww, wl) = app.record_map.get(&match_entry.west_id).copied().unwrap_or((0, 0));
+                let east_text = format!("{} ({}) ({}-{})", east_name, abbr_rank(&match_entry.east_rank), ew, el);
+                let west_text = format!("{} ({}) ({}-{})", west_name, abbr_rank(&match_entry.west_rank), ww, wl);
+
+                // Bold the winner if present
+                let (east_span, west_span) = if let Some(winner) = winner_opt {
+                    let east_is_winner = winner == &east_name;
+                    let west_is_winner = winner == &west_name;
+
+                    let win_style = Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD);
+                    let east_span = if east_is_winner {
+                        Span::styled(east_text, win_style)
+                    } else {
+                        Span::raw(east_text)
+                    };
+                    let west_span = if west_is_winner {
+                        Span::styled(west_text, win_style)
+                    } else {
+                        Span::raw(west_text)
+                    };
+                    (east_span, west_span)
+                } else {
+                    (Span::raw(east_text), Span::raw(west_text))
+                };
+
                 Row::new(vec![
-                    Cell::from(wrestler1),
-                    Cell::from("vs"),
-                    Cell::from(wrestler2),
-                    Cell::from(winner),
+                    Cell::from(Line::from(vec![east_span])),
+                    Cell::from(Line::from(vec![west_span])),
                     Cell::from(kimarite),
                 ]).style(style)
             })
@@ -220,15 +275,13 @@ fn render_torikumi(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         let table = Table::new(
             rows,
             [
-                Constraint::Percentage(25),
-                Constraint::Percentage(5),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(20),
+                Constraint::Percentage(40), // East
+                Constraint::Percentage(40), // West
+                Constraint::Percentage(20), // Kimarite
             ],
         )
         .header(
-            Row::new(vec!["Wrestler 1", "", "Wrestler 2", "Winner", "Kimarite"])
+            Row::new(vec!["East", "West", "Kimarite"])
                 .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
         )
         .block(Block::default().borders(Borders::ALL).title("Daily Matches"));
@@ -239,6 +292,31 @@ fn render_torikumi(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
             .block(Block::default().borders(Borders::ALL).title("Daily Matches"))
             .alignment(Alignment::Center);
         f.render_widget(paragraph, area);
+    }
+}
+
+// Convert a rank string to a compact abbreviation, e.g.:
+// "Maegashira 7 East" -> "M7", "M7e" -> "M7", "Ozeki" -> "O", "Yokozuna" -> "Y"
+fn abbr_rank(rank: &str) -> String {
+    let r = rank.trim();
+    let l = r.to_lowercase();
+    let digits: String = r.chars().filter(|c| c.is_ascii_digit()).collect();
+
+    if l.contains("yokozuna") || r.starts_with('Y') { return "Y".to_string(); }
+    if l.contains("ozeki") || r.starts_with('O') { return "O".to_string(); }
+    if l.contains("sekiwake") || r.starts_with('S') { return "S".to_string(); }
+    if l.contains("komusubi") || r.starts_with('K') { return "K".to_string(); }
+    if l.contains("maegashira") || r.starts_with('M') || r.starts_with('m') {
+        return if digits.is_empty() { "M".to_string() } else { format!("M{}", digits) };
+    }
+    if l.contains("juryo") || r.starts_with('J') { return if digits.is_empty() { "J".to_string() } else { format!("J{}", digits) }; }
+
+    // Generic fallback: take first alpha (uppercased) + digits if any, else original
+    let first_alpha = r.chars().find(|c| c.is_ascii_alphabetic()).map(|c| c.to_ascii_uppercase());
+    if let Some(ch) = first_alpha {
+        if digits.is_empty() { ch.to_string() } else { format!("{}{}", ch, digits) }
+    } else {
+        r.to_string()
     }
 }
 
@@ -307,15 +385,15 @@ fn render_basho_info(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         let mut text = vec![
             Line::from(vec![
                 Span::styled("Location: ", Style::default().fg(Color::Yellow)),
-                Span::raw(&basho.location),
+                Span::raw(basho.location.as_deref().unwrap_or("Unknown")),
             ]),
             Line::from(vec![
                 Span::styled("Start Date: ", Style::default().fg(Color::Yellow)),
-                Span::raw(format_date(&basho.start_date)),
+                Span::raw(basho.start_date.as_deref().map(format_date).unwrap_or_else(|| "Unknown".to_string())),
             ]),
             Line::from(vec![
                 Span::styled("End Date: ", Style::default().fg(Color::Yellow)),
-                Span::raw(format_date(&basho.end_date)),
+                Span::raw(basho.end_date.as_deref().map(format_date).unwrap_or_else(|| "Unknown".to_string())),
             ]),
         ];
 

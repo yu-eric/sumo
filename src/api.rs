@@ -3,12 +3,12 @@ use chrono::Datelike;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Basho {
-    pub date: String,
-    pub location: String,
+    pub date: Option<String>,
+    pub location: Option<String>,
     #[serde(rename = "startDate")]
-    pub start_date: String,
+    pub start_date: Option<String>,
     #[serde(rename = "endDate")]
-    pub end_date: String,
+    pub end_date: Option<String>,
     pub yusho: Option<Vec<YushoEntry>>,
     pub sansho: Option<Vec<SanshoEntry>>,
 }
@@ -144,77 +144,16 @@ impl SumoApi {
         Ok(torikumi)
     }
 
-    /// Get the current basho ID based on today's date
+    /// Get the current basho ID based on today's date.
+    ///
+    /// This is deterministic and does not probe the network. It selects the most
+    /// recent scheduled basho month relative to the current month using the
+    /// standard basho months: Jan, Mar, May, Jul, Sep, Nov.
     pub async fn get_current_basho_id(&self) -> String {
         let now = chrono::Utc::now();
-        let mut year = now.year();
-        let current_month = now.month();
-        
-        // Sumo basho months: January (01), March (03), May (05), July (07), September (09), November (11)
-        let basho_months = [11, 9, 7, 5, 3, 1];
-        
-        // Find the most recent basho month (go back to the most recent odd month)
-        let basho_month = if basho_months.contains(&current_month) {
-            // Current month is a basho month
-            current_month
-        } else {
-            // Find the most recent basho month before current month
-            if let Some(&month) = basho_months.iter().find(|&&m| m < current_month) {
-                month
-            } else {
-                // If no basho month found before current month, use November of previous year
-                year -= 1;
-                11
-            }
-        };
-        
-        // Try the calculated basho
-        let basho_id = format!("{}{:02}", year, basho_month);
-        
-        // Verify it exists
-        match self.get_basho(&basho_id).await {
-            Ok(basho) => {
-                if !basho.date.is_empty() && basho.date != "0001-01-01T00:00:00Z" && basho.date != "" {
-                    return basho_id;
-                }
-            }
-            Err(_) => {}
-        }
-        
-        // If it doesn't exist, try previous bashos from current year
-        for &month in basho_months.iter() {
-            let test_id = format!("{}{:02}", year, month);
-            if test_id == basho_id {
-                continue;
-            }
-            
-            match self.get_basho(&test_id).await {
-                Ok(basho) => {
-                    if !basho.date.is_empty() && basho.date != "0001-01-01T00:00:00Z" && basho.date != "" {
-                        return test_id;
-                    }
-                }
-                Err(_) => continue,
-            }
-        }
-        
-        // Try previous year
-        year -= 1;
-        for &month in basho_months.iter() {
-            let test_id = format!("{}{:02}", year, month);
-            
-            match self.get_basho(&test_id).await {
-                Ok(basho) => {
-                    if !basho.date.is_empty() && basho.date != "0001-01-01T00:00:00Z" && basho.date != "" {
-                        return test_id;
-                    }
-                }
-                Err(_) => continue,
-            }
-        }
-        
-        // Fallback to a known good basho
-        "202509".to_string()
+        let (year, month) = (now.year(), now.month());
+        let (by, bm) = most_recent_basho_ym(year, month);
+        format!("{}{:02}", by, bm)
     }
 
     /// Get the basho name from the month
@@ -254,13 +193,59 @@ impl SumoApi {
 
     /// Get the current day of the basho (1-15)
     pub async fn get_current_day(&self, basho_id: &str) -> anyhow::Result<u8> {
-        let basho = self.get_basho(basho_id).await?;
-        let start_date = chrono::NaiveDate::parse_from_str(&basho.start_date[..10], "%Y-%m-%d")?;
+        // Parse basho year and month from basho_id (YYYYMM)
         let now = chrono::Utc::now().naive_utc().date();
-        
-        let days_since_start = (now - start_date).num_days();
-        
-        // Basho runs for 15 days
+        let (ny, nm) = (now.year(), now.month());
+
+        let (by, bm) = if basho_id.len() >= 6 {
+            let y = basho_id[0..4].parse::<i32>().unwrap_or(ny);
+            let m = basho_id[4..6].parse::<u32>().unwrap_or(nm);
+            (y, m)
+        } else {
+            (ny, nm)
+        };
+
+        // If the selected basho month is in the past relative to 'now', it's finished => day 15.
+        if (by, bm) < (ny, nm) {
+            return Ok(15);
+        }
+
+        // If the selected basho month is in the future, it's not started => day 1.
+        if (by, bm) > (ny, nm) {
+            return Ok(1);
+        }
+
+        // Same month: try to use API start date; if that fails, approximate as second Sunday.
+        match self.get_basho(basho_id).await {
+            Ok(basho) => {
+                if let Some(s) = basho.start_date.as_deref() {
+                    if s.len() >= 10 {
+                        if let Ok(start_date) = chrono::NaiveDate::parse_from_str(&s[..10], "%Y-%m-%d") {
+                            let days_since_start = (now - start_date).num_days();
+                            let day = if days_since_start < 0 {
+                                1
+                            } else if days_since_start > 14 {
+                                15
+                            } else {
+                                (days_since_start + 1) as u8
+                            };
+                            return Ok(day);
+                        }
+                    }
+                }
+                // Fall through to approximation if parsing failed or missing data
+            }
+            Err(_) => {
+                // Fall through to approximation on API failure
+            }
+        }
+
+        // Approximate: basho typically starts on the second Sunday of the month and lasts 15 days.
+        let approx_start = approximate_basho_start(by, bm).unwrap_or_else(|| {
+            // Fallback: if approximation somehow fails, use the 10th as a rough midpoint
+            chrono::NaiveDate::from_ymd_opt(by, bm, 10).unwrap()
+        });
+        let days_since_start = (now - approx_start).num_days();
         let day = if days_since_start < 0 {
             1
         } else if days_since_start > 14 {
@@ -268,7 +253,72 @@ impl SumoApi {
         } else {
             (days_since_start + 1) as u8
         };
-        
         Ok(day)
+    }
+}
+
+/// Compute the most recent basho (year, month) for a given year and month.
+/// Basho months are fixed: 1, 3, 5, 7, 9, 11.
+fn most_recent_basho_ym(year: i32, month: u32) -> (i32, u32) {
+    // Fast path when month is one of the basho months
+    match month {
+        1 | 3 | 5 | 7 | 9 | 11 => return (year, month),
+        _ => {}
+    }
+
+    // Otherwise, pick the greatest basho month <= current month
+    let candidates = [1u32, 3, 5, 7, 9, 11];
+    if let Some(&m) = candidates.iter().filter(|&&m| m <= month).max() {
+        (year, m)
+    } else {
+        // This should never happen for real calendar months, but keep a safe fallback
+        (year - 1, 11)
+    }
+}
+
+/// Approximate the basho start date as the second Sunday of a given month.
+fn approximate_basho_start(year: i32, month: u32) -> Option<chrono::NaiveDate> {
+    let first = chrono::NaiveDate::from_ymd_opt(year, month, 1)?;
+    let first_weekday_from_sun = first.weekday().num_days_from_sunday(); // 0..=6
+    let days_to_first_sunday = (7 - first_weekday_from_sun) % 7; // 0..=6
+    let first_sunday_day = 1 + days_to_first_sunday as u32;
+    let second_sunday_day = first_sunday_day + 7;
+    chrono::NaiveDate::from_ymd_opt(year, month, second_sunday_day)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{most_recent_basho_ym, approximate_basho_start};
+
+    #[test]
+    fn october_maps_to_september() {
+        assert_eq!(most_recent_basho_ym(2025, 10), (2025, 9));
+    }
+
+    #[test]
+    fn december_maps_to_november() {
+        assert_eq!(most_recent_basho_ym(2025, 12), (2025, 11));
+    }
+
+    #[test]
+    fn february_maps_to_january() {
+        assert_eq!(most_recent_basho_ym(2025, 2), (2025, 1));
+    }
+
+    #[test]
+    fn january_stays_january() {
+        assert_eq!(most_recent_basho_ym(2025, 1), (2025, 1));
+    }
+
+    #[test]
+    fn march_stays_march() {
+        assert_eq!(most_recent_basho_ym(2025, 3), (2025, 3));
+    }
+
+    #[test]
+    fn approximate_second_sunday() {
+        // For September 2025, the first is Monday (2025-09-01), Sundays are 7,14,21,28 -> second is 14
+        let d = approximate_basho_start(2025, 9).unwrap();
+        assert_eq!(d.to_string(), "2025-09-14");
     }
 }
