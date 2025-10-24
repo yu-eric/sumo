@@ -1,6 +1,14 @@
-# Sumo TUI
+# Sumo
 
-A Terminal User Interface (TUI) application for viewing sumo tournament scores and information. This application fetches data from the Sumo API (https://www.sumo-api.com/) and displays it in an interactive terminal interface.
+A TUI app for viewing sumo tournament bouts and results.
+
+[![Crates.io][crates-badge]][crates-url]
+[![MIT licensed][mit-badge]][mit-url]
+
+[crates-badge]:https://img.shields.io/crates/v/sumo.svg 
+[crates-url]: https://crates.io/crates/sumo
+[mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
+[mit-url]: https://github.com/yu-eric/sumo/blob/main/LICENSE
 
 ## Features
 
@@ -8,7 +16,7 @@ A Terminal User Interface (TUI) application for viewing sumo tournament scores a
 - **Rankings (Banzuke)**: View wrestler rankings for a division
 - **Tournament Information**: View basic information about a basho (tournament)
 - **Multiple Divisions**: Support for all sumo divisions (Makuuchi, Juryo, Makushita, Sandanme, Jonidan, Jonokuchi)
-- **Interactive Navigation**: Keyboard-driven interface with help system
+- **Interactive Navigation**: Keyboard-driven interface
 
 ## Installation
 
