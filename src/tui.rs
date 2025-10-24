@@ -1,10 +1,10 @@
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{DisableMouseCapture, EnableMouseCapture, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
-    backend::{Backend, CrosstermBackend},
+    backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -14,6 +14,16 @@ use ratatui::{
 use std::io;
 use crate::api::{Basho, BanzukeEntry, TorikumiEntry};
 use std::collections::HashMap;
+
+const DIVISIONS: &[&str] = &["Makuuchi", "Juryo", "Makushita", "Sandanme", "Jonidan", "Jonokuchi"];
+
+#[derive(Clone, PartialEq)]
+pub enum InputMode {
+    Normal,
+    EditingDay,
+    SelectingDivision,
+    EditingBasho,
+}
 
 pub struct App {
     pub should_quit: bool,
@@ -29,6 +39,10 @@ pub struct App {
     pub scroll_offset: usize,
     // Map rikishi id -> (wins, losses)
     pub record_map: HashMap<u32, (u8, u8)>,
+    pub input_mode: InputMode,
+    pub input_buffer: String,
+    pub needs_reload: bool,
+    pub division_selector_index: usize,
 }
 
 #[derive(Clone, PartialEq)]
@@ -53,6 +67,10 @@ impl App {
             show_help: false,
             scroll_offset: 0,
             record_map: HashMap::new(),
+            input_mode: InputMode::Normal,
+            input_buffer: String::new(),
+            needs_reload: false,
+            division_selector_index: 0,
         }
     }
 
@@ -95,70 +113,154 @@ impl App {
     }
 
     pub fn on_key(&mut self, key: KeyCode) {
-        match key {
-            KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('h') | KeyCode::F(1) => self.show_help = !self.show_help,
-            KeyCode::Char('1') => {
-                self.current_view = AppView::Torikumi;
-                self.selected_index = 0;
-                self.scroll_offset = 0;
-            },
-            KeyCode::Char('2') => {
-                self.current_view = AppView::Banzuke;
-                self.selected_index = 0;
-                self.scroll_offset = 0;
-            },
-            KeyCode::Char('3') => {
-                self.current_view = AppView::BashoInfo;
-                self.selected_index = 0;
-                self.scroll_offset = 0;
-            },
-            KeyCode::Up => {
-                if self.selected_index > 0 {
-                    self.selected_index -= 1;
-                    if self.selected_index < self.scroll_offset {
-                        self.scroll_offset = self.selected_index;
+        // Handle input mode first
+        match self.input_mode {
+            InputMode::Normal => {
+                match key {
+                    KeyCode::Char('q') => self.should_quit = true,
+                    KeyCode::Char('h') | KeyCode::F(1) => self.show_help = !self.show_help,
+                    KeyCode::Char('d') => {
+                        self.input_mode = InputMode::EditingDay;
+                        self.input_buffer.clear();
+                    },
+                    KeyCode::Char('v') => {
+                        self.input_mode = InputMode::SelectingDivision;
+                        // Find current division index
+                        self.division_selector_index = DIVISIONS.iter()
+                            .position(|&d| d == self.division)
+                            .unwrap_or(0);
+                    },
+                    KeyCode::Char('b') => {
+                        self.input_mode = InputMode::EditingBasho;
+                        self.input_buffer.clear();
+                    },
+                    KeyCode::Char('1') => {
+                        self.current_view = AppView::Torikumi;
+                        self.selected_index = 0;
+                        self.scroll_offset = 0;
+                    },
+                    KeyCode::Char('2') => {
+                        self.current_view = AppView::Banzuke;
+                        self.selected_index = 0;
+                        self.scroll_offset = 0;
+                    },
+                    KeyCode::Char('3') => {
+                        self.current_view = AppView::BashoInfo;
+                        self.selected_index = 0;
+                        self.scroll_offset = 0;
+                    },
+                    KeyCode::Up => {
+                        if self.selected_index > 0 {
+                            self.selected_index -= 1;
+                            if self.selected_index < self.scroll_offset {
+                                self.scroll_offset = self.selected_index;
+                            }
+                        }
                     }
-                }
-            }
-            KeyCode::Down => {
-                let max_index = match self.current_view {
-                    AppView::Torikumi => self.torikumi.as_ref().map(|t| t.len()).unwrap_or(0),
-                    AppView::Banzuke => self.banzuke.as_ref().map(|b| b.len()).unwrap_or(0),
-                    AppView::BashoInfo => 0,
-                };
-                if self.selected_index + 1 < max_index {
-                    self.selected_index += 1;
-                    // Adjust scroll if selection goes beyond visible area (assume 10 visible items)
-                    let visible_items = 10;
-                    if self.selected_index >= self.scroll_offset + visible_items {
-                        self.scroll_offset = self.selected_index - visible_items + 1;
+                    KeyCode::Down => {
+                        let max_index = match self.current_view {
+                            AppView::Torikumi => self.torikumi.as_ref().map(|t| t.len()).unwrap_or(0),
+                            AppView::Banzuke => self.banzuke.as_ref().map(|b| b.len()).unwrap_or(0),
+                            AppView::BashoInfo => 0,
+                        };
+                        if self.selected_index + 1 < max_index {
+                            self.selected_index += 1;
+                            // Adjust scroll if selection goes beyond visible area (assume 10 visible items)
+                            let visible_items = 10;
+                            if self.selected_index >= self.scroll_offset + visible_items {
+                                self.scroll_offset = self.selected_index - visible_items + 1;
+                            }
+                        }
                     }
+                    KeyCode::Esc => self.show_help = false,
+                    _ => {}
                 }
-            }
-            KeyCode::Esc => self.show_help = false,
-            _ => {}
+            },
+            InputMode::EditingDay => {
+                match key {
+                    KeyCode::Char(c) if c.is_ascii_digit() => {
+                        self.input_buffer.push(c);
+                    },
+                    KeyCode::Backspace => {
+                        self.input_buffer.pop();
+                    },
+                    KeyCode::Enter => {
+                        if let Ok(day) = self.input_buffer.parse::<u8>() {
+                            if day >= 1 && day <= 15 {
+                                self.day = day;
+                                self.needs_reload = true;
+                            }
+                        }
+                        self.input_mode = InputMode::Normal;
+                        self.input_buffer.clear();
+                    },
+                    KeyCode::Esc => {
+                        self.input_mode = InputMode::Normal;
+                        self.input_buffer.clear();
+                    },
+                    _ => {}
+                }
+            },
+            InputMode::SelectingDivision => {
+                match key {
+                    KeyCode::Up => {
+                        if self.division_selector_index > 0 {
+                            self.division_selector_index -= 1;
+                        }
+                    },
+                    KeyCode::Down => {
+                        if self.division_selector_index + 1 < DIVISIONS.len() {
+                            self.division_selector_index += 1;
+                        }
+                    },
+                    KeyCode::Enter => {
+                        self.division = DIVISIONS[self.division_selector_index].to_string();
+                        self.needs_reload = true;
+                        self.input_mode = InputMode::Normal;
+                    },
+                    KeyCode::Esc => {
+                        self.input_mode = InputMode::Normal;
+                    },
+                    _ => {}
+                }
+            },
+            InputMode::EditingBasho => {
+                match key {
+                    KeyCode::Char(c) if c.is_ascii_digit() => {
+                        if self.input_buffer.len() < 6 {
+                            self.input_buffer.push(c);
+                        }
+                    },
+                    KeyCode::Backspace => {
+                        self.input_buffer.pop();
+                    },
+                    KeyCode::Enter => {
+                        if self.input_buffer.len() == 6 {
+                            if let Ok(year) = self.input_buffer[0..4].parse::<i32>() {
+                                if let Ok(month) = self.input_buffer[4..6].parse::<u32>() {
+                                    // Valid basho months are 1, 3, 5, 7, 9, 11
+                                    if year >= 2000 && year <= 2100 && [1, 3, 5, 7, 9, 11].contains(&month) {
+                                        self.basho_id = self.input_buffer.clone();
+                                        self.needs_reload = true;
+                                    }
+                                }
+                            }
+                        }
+                        self.input_mode = InputMode::Normal;
+                        self.input_buffer.clear();
+                    },
+                    KeyCode::Esc => {
+                        self.input_mode = InputMode::Normal;
+                        self.input_buffer.clear();
+                    },
+                    _ => {}
+                }
+            },
         }
     }
 }
 
-pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
-    loop {
-        terminal.draw(|f| ui(f, &mut app))?;
-
-        if let Event::Key(key) = event::read()? {
-            app.on_key(key.code);
-        }
-
-        if app.should_quit {
-            break;
-        }
-    }
-
-    Ok(())
-}
-
-fn ui(f: &mut Frame, app: &mut App) {
+pub fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
@@ -192,7 +294,7 @@ fn ui(f: &mut Frame, app: &mut App) {
     }
 
     // Footer
-    let footer_text = "Press 'q' to quit | '1' Torikumi | '2' Banzuke | '3' Basho Info | 'h' Help | ↑↓ Navigate";
+    let footer_text = "q: Quit | 1: Torikumi | 2: Banzuke | 3: Info | d: Day | v: Division | b: Basho | h: Help";
     let footer = Paragraph::new(footer_text)
         .style(Style::default().fg(Color::Cyan))
         .alignment(Alignment::Center)
@@ -203,6 +305,14 @@ fn ui(f: &mut Frame, app: &mut App) {
     // Help popup
     if app.show_help {
         render_help_popup(f);
+    }
+    
+    // Input popups
+    match app.input_mode {
+        InputMode::EditingDay => render_input_popup(f, "Day (1-15)", &app.input_buffer),
+        InputMode::SelectingDivision => render_division_selector(f, app.division_selector_index),
+        InputMode::EditingBasho => render_input_popup(f, "Basho (YYYYMM, e.g., 202501)", &app.input_buffer),
+        InputMode::Normal => {},
     }
 }
 
@@ -457,7 +567,7 @@ fn render_basho_info(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
 }
 
 fn render_help_popup(f: &mut Frame) {
-    let area = centered_rect(60, 50, f.area());
+    let area = centered_rect(70, 60, f.area());
     f.render_widget(Clear, area);
 
     let help_text = vec![
@@ -468,20 +578,81 @@ fn render_help_popup(f: &mut Frame) {
         Line::from("  1       - View daily matches (torikumi)"),
         Line::from("  2       - View rankings (banzuke)"),
         Line::from("  3       - View basho information"),
+        Line::from(""),
+        Line::from("Switch Data:"),
+        Line::from("  d       - Change day (1-15)"),
+        Line::from("  v       - Change division"),
+        Line::from("  b       - Change basho (YYYYMM format)"),
+        Line::from(""),
+        Line::from("Other:"),
         Line::from("  h/F1    - Toggle this help"),
         Line::from("  q       - Quit application"),
-        Line::from("  Esc     - Close help"),
+        Line::from("  Esc     - Close help/cancel input"),
         Line::from(""),
-        Line::from("Command line options:"),
-        Line::from("  --basho YYYYMM    - Specify basho"),
-        Line::from("  --day N           - Specify day (1-15)"),
-        Line::from("  --division DIV    - Specify division"),
-        Line::from("  --banzuke         - Start in banzuke view"),
+        Line::from("Divisions: Makuuchi, Juryo, Makushita, Sandanme, Jonidan, Jonokuchi"),
+        Line::from("Basho months: 01, 03, 05, 07, 09, 11"),
     ];
 
     let paragraph = Paragraph::new(help_text)
         .block(Block::default().borders(Borders::ALL).title("Help"))
         .wrap(ratatui::widgets::Wrap { trim: true });
+
+    f.render_widget(paragraph, area);
+}
+
+fn render_input_popup(f: &mut Frame, prompt: &str, input: &str) {
+    let area = centered_rect(50, 20, f.area());
+    f.render_widget(Clear, area);
+
+    let text = vec![
+        Line::from(prompt),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("> ", Style::default().fg(Color::Green)),
+            Span::raw(input),
+            Span::styled("_", Style::default().fg(Color::Yellow)),
+        ]),
+        Line::from(""),
+        Line::from("Press Enter to confirm, Esc to cancel"),
+    ];
+
+    let paragraph = Paragraph::new(text)
+        .block(Block::default().borders(Borders::ALL).title("Input"))
+        .alignment(Alignment::Left);
+
+    f.render_widget(paragraph, area);
+}
+
+fn render_division_selector(f: &mut Frame, selected_index: usize) {
+    let area = centered_rect(50, 50, f.area());
+    f.render_widget(Clear, area);
+
+    let mut text = vec![
+        Line::from("Select Division"),
+        Line::from(""),
+    ];
+
+    for (i, division) in DIVISIONS.iter().enumerate() {
+        let line = if i == selected_index {
+            Line::from(vec![
+                Span::styled("> ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled(*division, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            ])
+        } else {
+            Line::from(vec![
+                Span::raw("  "),
+                Span::raw(*division),
+            ])
+        };
+        text.push(line);
+    }
+
+    text.push(Line::from(""));
+    text.push(Line::from("Use ↑↓ to select, Enter to confirm, Esc to cancel"));
+
+    let paragraph = Paragraph::new(text)
+        .block(Block::default().borders(Borders::ALL).title("Division"))
+        .alignment(Alignment::Left);
 
     f.render_widget(paragraph, area);
 }

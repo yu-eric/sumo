@@ -5,7 +5,10 @@ mod tui;
 use clap::Parser;
 use api::SumoApi;
 use cli::Args;
-use tui::{App, AppView, setup_terminal, restore_terminal, run_app};
+use tui::{App, AppView, setup_terminal, restore_terminal};
+use crossterm::event::{self, Event};
+use ratatui::{backend::CrosstermBackend, Terminal};
+use std::io;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -54,8 +57,8 @@ async fn main() -> anyhow::Result<()> {
     // Setup terminal after data is loaded
     let mut terminal = setup_terminal()?;
     
-    // Run the app
-    let result = run_app(&mut terminal, app);
+    // Run the app with async support for reloading
+    let result = run_app_with_reload(&mut terminal, app, api).await;
     
     // Restore terminal
     restore_terminal(&mut terminal)?;
@@ -145,5 +148,51 @@ async fn load_data(
     eprintln!("Data loading completed. Starting TUI...");
     // Give the terminal a moment to clear
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    Ok(())
+}
+
+async fn run_app_with_reload(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    mut app: App,
+    api: SumoApi,
+) -> io::Result<()> {
+    loop {
+        terminal.draw(|f| tui::ui(f, &mut app))?;
+
+        if event::poll(std::time::Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                app.on_key(key.code);
+            }
+        }
+
+        if app.should_quit {
+            break;
+        }
+
+        // Check if we need to reload data
+        if app.needs_reload {
+            app.needs_reload = false;
+            
+            // Store values before borrowing mutably
+            let basho_id = app.basho_id.clone();
+            let division = app.division.clone();
+            let day = app.day;
+            
+            // Clear the terminal to remove leftover text
+            terminal.clear()?;
+            
+            // Show loading message
+            eprintln!("Reloading data for basho {} division {} day {}...", basho_id, division, day);
+            
+            // Reload data
+            if let Err(e) = load_data(&api, &basho_id, &division, day, &mut app).await {
+                eprintln!("Error reloading data: {}", e);
+            }
+            
+            // Clear the terminal again after reload to remove eprintln messages
+            terminal.clear()?;
+        }
+    }
+
     Ok(())
 }
