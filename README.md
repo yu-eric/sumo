@@ -4,6 +4,8 @@ A TUI app for viewing sumo tournament bouts and results.
 
 [![Crates.io][crates-badge]][crates-url]
 [![MIT licensed][mit-badge]][mit-url]
+[![asciicast](https://asciinema.org/a/YBqAbvhEPYw7PyYQhUIYczN1M.png)](https://asciinema.org/a/YBqAbvhEPYw7PyYQhUIYczN1M)
+
 
 [crates-badge]:https://img.shields.io/crates/v/sumo.svg 
 [crates-url]: https://crates.io/crates/sumo
@@ -102,3 +104,6 @@ cargo build --release
 ```
 
 The binary will be available at `target/release/sumo`.
+
+## Contributing
+Contributions are welcome; please create an issue for feature requests or bugs or feel free to make a pull request.
