@@ -13,8 +13,10 @@ A TUI app for viewing sumo tournament bouts and results.
 ## Features
 
 - **Daily Matches (Torikumi)**: View match results for a specific day and division
-- **Rankings (Banzuke)**: View wrestler rankings for a division
+- **Rankings (Banzuke)**: View rikishi rankings for a division
 - **Tournament Information**: View basic information about a basho (tournament)
+- **Rikishi Details**: View detailed information about individual rikishi including stats, heya, and physical measurements
+- **Head-to-Head History**: View match history between two rikishi with win/loss records and technique breakdowns
 - **Multiple Divisions**: Support for all sumo divisions (Makuuchi, Juryo, Makushita, Sandanme, Jonidan, Jonokuchi)
 - **Interactive Navigation**: Keyboard-driven interface
 
@@ -69,21 +71,23 @@ cargo run -- --basho 202401 --day 5 --division makuuchi
 ## Keyboard Controls
 
 ### Navigation
-- `↑/↓` - Navigate through lists
-- `1` - View daily matches (torikumi)
-- `2` - View rankings (banzuke)
-- `3` - View basho information
+- `↑/↓` or `w/s` - Navigate through lists
+- `←/→` or `a/d` - Switch between pages (Torikumi ↔ Banzuke ↔ Basho Info)
+- `Enter` or `Space` - View details (rikishi details in banzuke, head-to-head in torikumi)
+- `1` - Jump to daily matches (torikumi)
+- `2` - Jump to rankings (banzuke)
+- `3` - Jump to basho information
+- `Esc` - Close popups/help
+
+### Data Controls
+- `c` - Change day (1-15)
+- `v` - Change division (interactive selector)
+- `b` - Change basho (YYYYMM format)
+
+### Other
 - `h` or `F1` - Toggle help
 - `q` - Quit application
 - `Esc` - Close help
-
-## Default Behavior
-
-When run without arguments, the application will:
-1. Determine the current basho based on today's date
-2. Calculate the current day of the basho (or use the last day if the basho has ended)
-3. Show Makuuchi division results
-4. Start in the daily matches (torikumi) view
 
 ## API Data Source
 
