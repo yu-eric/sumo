@@ -131,7 +131,7 @@ impl App {
                 match key {
                     KeyCode::Char('q') => self.should_quit = true,
                     KeyCode::Char('h') | KeyCode::F(1) => self.show_help = !self.show_help,
-                    KeyCode::Char('d') => {
+                    KeyCode::Char('c') => {
                         self.input_mode = InputMode::EditingDay;
                         self.input_buffer.clear();
                     },
@@ -161,7 +161,41 @@ impl App {
                         self.selected_index = 0;
                         self.scroll_offset = 0;
                     },
-                    KeyCode::Up => {
+                    // Page navigation with a/d and left/right arrows
+                    KeyCode::Char('a') | KeyCode::Left => {
+                        match self.current_view {
+                            AppView::Torikumi => {
+                                // Wrap to BashoInfo
+                                self.current_view = AppView::BashoInfo;
+                            },
+                            AppView::Banzuke => {
+                                self.current_view = AppView::Torikumi;
+                            },
+                            AppView::BashoInfo => {
+                                self.current_view = AppView::Banzuke;
+                            },
+                        }
+                        self.selected_index = 0;
+                        self.scroll_offset = 0;
+                    },
+                    KeyCode::Char('d') | KeyCode::Right => {
+                        match self.current_view {
+                            AppView::Torikumi => {
+                                self.current_view = AppView::Banzuke;
+                            },
+                            AppView::Banzuke => {
+                                self.current_view = AppView::BashoInfo;
+                            },
+                            AppView::BashoInfo => {
+                                // Wrap to Torikumi
+                                self.current_view = AppView::Torikumi;
+                            },
+                        }
+                        self.selected_index = 0;
+                        self.scroll_offset = 0;
+                    },
+                    // WASD navigation
+                    KeyCode::Char('w') | KeyCode::Up => {
                         if self.selected_index > 0 {
                             self.selected_index -= 1;
                             if self.selected_index < self.scroll_offset {
@@ -169,7 +203,7 @@ impl App {
                             }
                         }
                     }
-                    KeyCode::Down => {
+                    KeyCode::Char('s') | KeyCode::Down => {
                         let max_index = match self.current_view {
                             AppView::Torikumi => self.torikumi.as_ref().map(|t| t.len()).unwrap_or(0),
                             AppView::Banzuke => self.banzuke.as_ref().map(|b| b.len()).unwrap_or(0),
@@ -184,7 +218,7 @@ impl App {
                             }
                         }
                     }
-                    KeyCode::Enter => {
+                    KeyCode::Enter | KeyCode::Char(' ') => {
                         // If in banzuke view, show rikishi details
                         if self.current_view == AppView::Banzuke {
                             if let Some(banzuke) = &self.banzuke {
@@ -338,7 +372,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     }
 
     // Footer
-    let footer_text = "q: Quit | 1: Torikumi | 2: Banzuke | 3: Info | d: Day | v: Division | b: Basho | h: Help";
+    let footer_text = "q: Quit | 1: Torikumi | 2: Banzuke | 3: Info | c: Day | v: Division | b: Basho | h: Help";
     let footer = Paragraph::new(footer_text)
         .style(Style::default().fg(Color::Cyan))
         .alignment(Alignment::Center)
@@ -632,14 +666,15 @@ fn render_help_popup(f: &mut Frame) {
         Line::from("Sumo TUI Help"),
         Line::from(""),
         Line::from("Navigation:"),
-        Line::from("  ↑/↓     - Navigate lists"),
-        Line::from("  Enter   - View details (rikishi in banzuke, head-to-head in torikumi)"),
-        Line::from("  1       - View daily matches (torikumi)"),
-        Line::from("  2       - View rankings (banzuke)"),
-        Line::from("  3       - View basho information"),
+        Line::from("  ↑/↓/w/s     - Navigate lists"),
+        Line::from("  ←/→/a/d     - Switch between pages"),
+        Line::from("  Enter       - View details (rikishi in banzuke, head-to-head in torikumi)"),
+        Line::from("  1           - View daily matches (torikumi)"),
+        Line::from("  2           - View rankings (banzuke)"),
+        Line::from("  3           - View basho information"),
         Line::from(""),
         Line::from("Switch Data:"),
-        Line::from("  d       - Change day (1-15)"),
+        Line::from("  c       - Change day (1-15)"),
         Line::from("  v       - Change division"),
         Line::from("  b       - Change basho (YYYYMM format)"),
         Line::from(""),
