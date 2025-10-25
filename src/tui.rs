@@ -12,7 +12,7 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::io;
-use crate::api::{Basho, BanzukeEntry, TorikumiEntry};
+use crate::api::{Basho, BanzukeEntry, TorikumiEntry, RikishiDetails, HeadToHeadResponse};
 use std::collections::HashMap;
 
 const DIVISIONS: &[&str] = &["Makuuchi", "Juryo", "Makushita", "Sandanme", "Jonidan", "Jonokuchi"];
@@ -43,6 +43,12 @@ pub struct App {
     pub input_buffer: String,
     pub needs_reload: bool,
     pub division_selector_index: usize,
+    pub show_rikishi_details: bool,
+    pub rikishi_details: Option<RikishiDetails>,
+    pub requested_rikishi_id: Option<u32>,
+    pub show_head_to_head: bool,
+    pub head_to_head_data: Option<HeadToHeadResponse>,
+    pub requested_head_to_head: Option<(u32, u32)>, // (rikishi_id, opponent_id)
 }
 
 #[derive(Clone, PartialEq)]
@@ -71,6 +77,12 @@ impl App {
             input_buffer: String::new(),
             needs_reload: false,
             division_selector_index: 0,
+            show_rikishi_details: false,
+            rikishi_details: None,
+            requested_rikishi_id: None,
+            show_head_to_head: false,
+            head_to_head_data: None,
+            requested_head_to_head: None,
         }
     }
 
@@ -172,7 +184,39 @@ impl App {
                             }
                         }
                     }
-                    KeyCode::Esc => self.show_help = false,
+                    KeyCode::Enter => {
+                        // If in banzuke view, show rikishi details
+                        if self.current_view == AppView::Banzuke {
+                            if let Some(banzuke) = &self.banzuke {
+                                if self.selected_index < banzuke.len() {
+                                    let rikishi_id = banzuke[self.selected_index].rikishi_id;
+                                    self.requested_rikishi_id = Some(rikishi_id);
+                                }
+                            }
+                        }
+                        // If in torikumi view, show head-to-head
+                        else if self.current_view == AppView::Torikumi {
+                            if let Some(torikumi) = &self.torikumi {
+                                if self.selected_index < torikumi.len() {
+                                    let match_entry = &torikumi[self.selected_index];
+                                    let east_id = match_entry.east_id;
+                                    let west_id = match_entry.west_id;
+                                    self.requested_head_to_head = Some((east_id, west_id));
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Esc => {
+                        if self.show_rikishi_details {
+                            self.show_rikishi_details = false;
+                            self.rikishi_details = None;
+                        } else if self.show_head_to_head {
+                            self.show_head_to_head = false;
+                            self.head_to_head_data = None;
+                        } else {
+                            self.show_help = false;
+                        }
+                    }
                     _ => {}
                 }
             },
@@ -313,6 +357,20 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         InputMode::SelectingDivision => render_division_selector(f, app.division_selector_index),
         InputMode::EditingBasho => render_input_popup(f, "Basho (YYYYMM, e.g., 202501)", &app.input_buffer),
         InputMode::Normal => {},
+    }
+    
+    // Rikishi details popup
+    if app.show_rikishi_details {
+        if let Some(details) = &app.rikishi_details {
+            render_rikishi_details(f, details);
+        }
+    }
+    
+    // Head-to-head popup
+    if app.show_head_to_head {
+        if let Some(h2h) = &app.head_to_head_data {
+            render_head_to_head(f, h2h);
+        }
     }
 }
 
@@ -575,6 +633,7 @@ fn render_help_popup(f: &mut Frame) {
         Line::from(""),
         Line::from("Navigation:"),
         Line::from("  ↑/↓     - Navigate lists"),
+        Line::from("  Enter   - View details (rikishi in banzuke, head-to-head in torikumi)"),
         Line::from("  1       - View daily matches (torikumi)"),
         Line::from("  2       - View rankings (banzuke)"),
         Line::from("  3       - View basho information"),
@@ -587,7 +646,7 @@ fn render_help_popup(f: &mut Frame) {
         Line::from("Other:"),
         Line::from("  h/F1    - Toggle this help"),
         Line::from("  q       - Quit application"),
-        Line::from("  Esc     - Close help/cancel input"),
+        Line::from("  Esc     - Close help/cancel input/close details"),
         Line::from(""),
         Line::from("Divisions: Makuuchi, Juryo, Makushita, Sandanme, Jonidan, Jonokuchi"),
         Line::from("Basho months: 01, 03, 05, 07, 09, 11"),
@@ -653,6 +712,270 @@ fn render_division_selector(f: &mut Frame, selected_index: usize) {
     let paragraph = Paragraph::new(text)
         .block(Block::default().borders(Borders::ALL).title("Division"))
         .alignment(Alignment::Left);
+
+    f.render_widget(paragraph, area);
+}
+
+fn render_rikishi_details(f: &mut Frame, details: &RikishiDetails) {
+    let area = centered_rect(70, 70, f.area());
+    f.render_widget(Clear, area);
+
+    // Helper function to format date
+    let format_date = |date_str: &str| -> String {
+        if let Some(date_part) = date_str.split('T').next() {
+            date_part.to_string()
+        } else {
+            date_str.to_string()
+        }
+    };
+
+    // Calculate age from birth date
+    let age_str = if let Some(birth_date) = &details.birth_date {
+        if let Ok(date) = chrono::NaiveDate::parse_from_str(&birth_date[..10], "%Y-%m-%d") {
+            let now = chrono::Utc::now().date_naive();
+            let age = now.years_since(date).unwrap_or(0);
+            format!(" (Age: {})", age)
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    let mut text = vec![
+        Line::from(vec![
+            Span::styled("Rikishi Details", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Shikona (English): ", Style::default().fg(Color::Green)),
+            Span::raw(&details.shikona_en),
+        ]),
+        Line::from(vec![
+            Span::styled("Shikona (Japanese): ", Style::default().fg(Color::Green)),
+            Span::raw(&details.shikona_jp),
+        ]),
+        Line::from(""),
+    ];
+
+    if let Some(rank) = &details.current_rank {
+        text.push(Line::from(vec![
+            Span::styled("Current Rank: ", Style::default().fg(Color::Cyan)),
+            Span::raw(rank),
+        ]));
+    }
+
+    if let Some(heya) = &details.heya {
+        text.push(Line::from(vec![
+            Span::styled("Heya: ", Style::default().fg(Color::Cyan)),
+            Span::raw(heya),
+        ]));
+    }
+
+    text.push(Line::from(""));
+
+    if let Some(birth_date) = &details.birth_date {
+        text.push(Line::from(vec![
+            Span::styled("Birth Date: ", Style::default().fg(Color::Magenta)),
+            Span::raw(format_date(birth_date)),
+            Span::raw(age_str),
+        ]));
+    }
+
+    if let Some(shusshin) = &details.shusshin {
+        text.push(Line::from(vec![
+            Span::styled("Birthplace: ", Style::default().fg(Color::Magenta)),
+            Span::raw(shusshin),
+        ]));
+    }
+
+    text.push(Line::from(""));
+
+    if let Some(height) = details.height {
+        // Convert cm to feet and inches
+        let total_inches = (height as f64) / 2.54;
+        let feet = (total_inches / 12.0).floor() as u32;
+        let inches = (total_inches % 12.0).round() as u32;
+        
+        text.push(Line::from(vec![
+            Span::styled("Height: ", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("{} cm ({}' {}\")", height, feet, inches)),
+        ]));
+    }
+
+    if let Some(weight) = details.weight {
+        // Convert kg to lbs
+        let lbs = ((weight as f64) * 2.20462).round() as u32;
+        
+        text.push(Line::from(vec![
+            Span::styled("Weight: ", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("{} kg ({} lbs)", weight, lbs)),
+        ]));
+    }
+
+    text.push(Line::from(""));
+
+    if let Some(debut) = &details.debut {
+        // Format debut as YYYY-MM
+        let debut_formatted = if debut.len() == 6 {
+            format!("{}-{}", &debut[0..4], &debut[4..6])
+        } else {
+            debut.clone()
+        };
+        text.push(Line::from(vec![
+            Span::styled("Debut: ", Style::default().fg(Color::Green)),
+            Span::raw(debut_formatted),
+        ]));
+    }
+
+    text.push(Line::from(""));
+    text.push(Line::from(vec![
+        Span::styled("Press Esc to close", Style::default().fg(Color::Cyan).add_modifier(Modifier::ITALIC)),
+    ]));
+
+    let paragraph = Paragraph::new(text)
+        .block(Block::default().borders(Borders::ALL).title("Rikishi Information"))
+        .wrap(ratatui::widgets::Wrap { trim: true });
+
+    f.render_widget(paragraph, area);
+}
+
+fn render_head_to_head(f: &mut Frame, h2h: &HeadToHeadResponse) {
+    let area = centered_rect(80, 80, f.area());
+    f.render_widget(Clear, area);
+
+    let mut text = vec![
+        Line::from(vec![
+            Span::styled("Head-to-Head Record", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+    ];
+
+    // Overall record
+    if !h2h.matches.is_empty() {
+        let first_match = &h2h.matches[0];
+        let rikishi_name = if first_match.winner_id == Some(first_match.east_id) || first_match.east_id != first_match.east_id {
+            &first_match.east_shikona
+        } else {
+            &first_match.east_shikona
+        };
+        let opponent_name = if first_match.east_id == first_match.east_id {
+            &first_match.west_shikona
+        } else {
+            &first_match.west_shikona
+        };
+
+        text.push(Line::from(vec![
+            Span::styled("Total Matches: ", Style::default().fg(Color::Cyan)),
+            Span::raw(format!("{}", h2h.total)),
+        ]));
+        text.push(Line::from(vec![
+            Span::styled(format!("{} Wins: ", rikishi_name), Style::default().fg(Color::Green)),
+            Span::raw(format!("{}", h2h.rikishi_wins)),
+        ]));
+        text.push(Line::from(vec![
+            Span::styled(format!("{} Wins: ", opponent_name), Style::default().fg(Color::Red)),
+            Span::raw(format!("{}", h2h.opponent_wins)),
+        ]));
+        text.push(Line::from(""));
+    }
+
+    // Kimarite wins
+    if let Some(wins) = &h2h.kimarite_wins {
+        if !wins.is_empty() {
+            text.push(Line::from(vec![
+                Span::styled("Winning Techniques:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]));
+            for (technique, count) in wins {
+                // Capitalize first letter
+                let capitalized = if !technique.is_empty() {
+                    let mut chars: Vec<char> = technique.chars().collect();
+                    chars[0] = chars[0].to_uppercase().next().unwrap_or(chars[0]);
+                    chars.into_iter().collect()
+                } else {
+                    technique.clone()
+                };
+                
+                text.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(capitalized, Style::default().fg(Color::Green)),
+                    Span::raw(format!(": {}", count)),
+                ]));
+            }
+            text.push(Line::from(""));
+        }
+    }
+
+    // Kimarite losses
+    if let Some(losses) = &h2h.kimarite_losses {
+        if !losses.is_empty() {
+            text.push(Line::from(vec![
+                Span::styled("Losing Techniques:", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            ]));
+            for (technique, count) in losses {
+                // Capitalize first letter
+                let capitalized = if !technique.is_empty() {
+                    let mut chars: Vec<char> = technique.chars().collect();
+                    chars[0] = chars[0].to_uppercase().next().unwrap_or(chars[0]);
+                    chars.into_iter().collect()
+                } else {
+                    technique.clone()
+                };
+                
+                text.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(capitalized, Style::default().fg(Color::Red)),
+                    Span::raw(format!(": {}", count)),
+                ]));
+            }
+            text.push(Line::from(""));
+        }
+    }
+
+    // Match history (show most recent 10)
+    text.push(Line::from(vec![
+        Span::styled("Recent Matches:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+    ]));
+    text.push(Line::from(""));
+
+    for (i, match_entry) in h2h.matches.iter().take(10).enumerate() {
+        let basho_date = crate::api::SumoApi::format_basho_date(&match_entry.basho_id);
+        let winner = match_entry.winner_en.as_deref().unwrap_or("N/A");
+        let kimarite_raw = match_entry.kimarite.as_deref().unwrap_or("N/A");
+        
+        // Capitalize first letter of kimarite
+        let kimarite = if !kimarite_raw.is_empty() {
+            let mut chars: Vec<char> = kimarite_raw.chars().collect();
+            chars[0] = chars[0].to_uppercase().next().unwrap_or(chars[0]);
+            chars.into_iter().collect()
+        } else {
+            kimarite_raw.to_string()
+        };
+
+        text.push(Line::from(vec![
+            Span::styled(format!("{}. ", i + 1), Style::default().fg(Color::DarkGray)),
+            Span::raw(format!("{} Day {}: ", basho_date, match_entry.day)),
+            Span::styled(winner, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::raw(" by "),
+            Span::styled(kimarite, Style::default().fg(Color::Cyan)),
+        ]));
+    }
+
+    if h2h.matches.len() > 10 {
+        text.push(Line::from(""));
+        text.push(Line::from(vec![
+            Span::styled(format!("... and {} more", h2h.matches.len() - 10), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+        ]));
+    }
+
+    text.push(Line::from(""));
+    text.push(Line::from(vec![
+        Span::styled("Press Esc to close", Style::default().fg(Color::Cyan).add_modifier(Modifier::ITALIC)),
+    ]));
+
+    let paragraph = Paragraph::new(text)
+        .block(Block::default().borders(Borders::ALL).title("Match History"))
+        .wrap(ratatui::widgets::Wrap { trim: true });
 
     f.render_widget(paragraph, area);
 }

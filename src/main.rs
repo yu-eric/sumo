@@ -192,6 +192,32 @@ async fn run_app_with_reload(
             // Clear the terminal again after reload to remove eprintln messages
             terminal.clear()?;
         }
+
+        // Check if we need to load rikishi details
+        if let Some(rikishi_id) = app.requested_rikishi_id.take() {
+            match api.get_rikishi(rikishi_id).await {
+                Ok(details) => {
+                    app.rikishi_details = Some(details);
+                    app.show_rikishi_details = true;
+                },
+                Err(e) => {
+                    eprintln!("Error loading rikishi details: {}", e);
+                }
+            }
+        }
+
+        // Check if we need to load head-to-head data
+        if let Some((rikishi_id, opponent_id)) = app.requested_head_to_head.take() {
+            match api.get_head_to_head(rikishi_id, opponent_id).await {
+                Ok(h2h) => {
+                    app.head_to_head_data = Some(h2h);
+                    app.show_head_to_head = true;
+                },
+                Err(e) => {
+                    eprintln!("Error loading head-to-head data: {}", e);
+                }
+            }
+        }
     }
 
     Ok(())

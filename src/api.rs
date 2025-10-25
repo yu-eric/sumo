@@ -110,6 +110,71 @@ pub struct TorikumiEntry {
     pub winner_jp: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct RikishiDetails {
+    pub id: u32,
+    #[serde(rename = "sumodbId")]
+    pub sumodb_id: Option<u32>,
+    #[serde(rename = "nskId")]
+    pub nsk_id: Option<u32>,
+    #[serde(rename = "shikonaEn")]
+    pub shikona_en: String,
+    #[serde(rename = "shikonaJp")]
+    pub shikona_jp: String,
+    #[serde(rename = "currentRank")]
+    pub current_rank: Option<String>,
+    pub heya: Option<String>,
+    #[serde(rename = "birthDate")]
+    pub birth_date: Option<String>,
+    pub shusshin: Option<String>,
+    pub height: Option<u32>,
+    pub weight: Option<u32>,
+    pub debut: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct HeadToHeadResponse {
+    #[serde(rename = "kimariteLosses")]
+    pub kimarite_losses: Option<std::collections::HashMap<String, u32>>,
+    #[serde(rename = "kimariteWins")]
+    pub kimarite_wins: Option<std::collections::HashMap<String, u32>>,
+    pub matches: Vec<HeadToHeadMatch>,
+    #[serde(rename = "opponentWins")]
+    pub opponent_wins: u32,
+    #[serde(rename = "rikishiWins")]
+    pub rikishi_wins: u32,
+    pub total: u32,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct HeadToHeadMatch {
+    #[serde(rename = "bashoId")]
+    pub basho_id: String,
+    pub division: String,
+    pub day: u8,
+    #[serde(rename = "matchNo")]
+    pub match_no: u8,
+    #[serde(rename = "eastId")]
+    pub east_id: u32,
+    #[serde(rename = "eastShikona")]
+    pub east_shikona: String,
+    #[serde(rename = "eastRank")]
+    pub east_rank: String,
+    #[serde(rename = "westId")]
+    pub west_id: u32,
+    #[serde(rename = "westShikona")]
+    pub west_shikona: String,
+    #[serde(rename = "westRank")]
+    pub west_rank: String,
+    pub kimarite: Option<String>,
+    #[serde(rename = "winnerId")]
+    pub winner_id: Option<u32>,
+    #[serde(rename = "winnerEn")]
+    pub winner_en: Option<String>,
+    #[serde(rename = "winnerJp")]
+    pub winner_jp: Option<String>,
+}
+
 pub struct SumoApi {
     client: reqwest::Client,
     base_url: String,
@@ -142,6 +207,20 @@ impl SumoApi {
         let response = self.client.get(&url).send().await?;
         let torikumi = response.json::<TorikumiResponse>().await?;
         Ok(torikumi)
+    }
+
+    pub async fn get_rikishi(&self, rikishi_id: u32) -> anyhow::Result<RikishiDetails> {
+        let url = format!("{}/api/rikishi/{}", self.base_url, rikishi_id);
+        let response = self.client.get(&url).send().await?;
+        let rikishi = response.json::<RikishiDetails>().await?;
+        Ok(rikishi)
+    }
+
+    pub async fn get_head_to_head(&self, rikishi_id: u32, opponent_id: u32) -> anyhow::Result<HeadToHeadResponse> {
+        let url = format!("{}/api/rikishi/{}/matches/{}", self.base_url, rikishi_id, opponent_id);
+        let response = self.client.get(&url).send().await?;
+        let head_to_head = response.json::<HeadToHeadResponse>().await?;
+        Ok(head_to_head)
     }
 
     /// Get the current basho ID based on today's date.
