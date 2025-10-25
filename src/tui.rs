@@ -165,34 +165,36 @@ impl App {
                     KeyCode::Char('a') | KeyCode::Left => {
                         match self.current_view {
                             AppView::Torikumi => {
-                                // Wrap to BashoInfo
-                                self.current_view = AppView::BashoInfo;
+                                // Already at first page, do nothing
                             },
                             AppView::Banzuke => {
                                 self.current_view = AppView::Torikumi;
+                                self.selected_index = 0;
+                                self.scroll_offset = 0;
                             },
                             AppView::BashoInfo => {
                                 self.current_view = AppView::Banzuke;
+                                self.selected_index = 0;
+                                self.scroll_offset = 0;
                             },
                         }
-                        self.selected_index = 0;
-                        self.scroll_offset = 0;
                     },
                     KeyCode::Char('d') | KeyCode::Right => {
                         match self.current_view {
                             AppView::Torikumi => {
                                 self.current_view = AppView::Banzuke;
+                                self.selected_index = 0;
+                                self.scroll_offset = 0;
                             },
                             AppView::Banzuke => {
                                 self.current_view = AppView::BashoInfo;
+                                self.selected_index = 0;
+                                self.scroll_offset = 0;
                             },
                             AppView::BashoInfo => {
-                                // Wrap to Torikumi
-                                self.current_view = AppView::Torikumi;
+                                // Already at last page, do nothing
                             },
                         }
-                        self.selected_index = 0;
-                        self.scroll_offset = 0;
                     },
                     // WASD navigation
                     KeyCode::Char('w') | KeyCode::Up => {
@@ -612,10 +614,10 @@ fn render_basho_info(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         };
 
         let mut text = vec![
-            Line::from(vec![
-                Span::styled("Location: ", Style::default().fg(Color::Yellow)),
-                Span::raw(basho.location.as_deref().unwrap_or("Unknown")),
-            ]),
+            // Line::from(vec![
+            //     Span::styled("Location: ", Style::default().fg(Color::Yellow)),
+            //     Span::raw(basho.location.as_deref().unwrap_or("Unknown")),
+            // ]), TODO: Fix unknown location
             Line::from(vec![
                 Span::styled("Start Date: ", Style::default().fg(Color::Yellow)),
                 Span::raw(basho.start_date.as_deref().map(format_date).unwrap_or_else(|| "Unknown".to_string())),
