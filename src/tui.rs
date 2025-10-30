@@ -292,8 +292,10 @@ impl App {
             InputMode::EditingDay => {
                 match key {
                     KeyCode::Char(c) if c.is_ascii_digit() => {
-                        self.input_buffer.push(c);
-                        self.input_error = None;
+                        if self.input_buffer.len() < 2 {
+                            self.input_buffer.push(c);
+                            self.input_error = None;
+                        }
                     },
                     KeyCode::Backspace => {
                         self.input_buffer.pop();
@@ -301,17 +303,17 @@ impl App {
                     },
                     KeyCode::Enter => {
                         if let Ok(day) = self.input_buffer.parse::<u8>() {
-                            if day >= 1 && day <= 15 {
+                            if (1..=15).contains(&day) {
                                 self.day = day;
                                 self.needs_reload = true;
                                 self.input_mode = InputMode::Normal;
                                 self.input_buffer.clear();
                                 self.input_error = None;
                             } else {
-                                self.input_error = Some("Please enter a valid day.".to_string());
+                                self.input_error = Some("Invalid day/basho".to_string());
                             }
                         } else {
-                            self.input_error = Some("Please enter a valid day.".to_string());
+                            self.input_error = Some("Invalid day/basho".to_string());
                         }
                     },
                     KeyCode::Esc => {
@@ -364,7 +366,7 @@ impl App {
                         if self.input_buffer.len() == 6 {
                             if let Ok(year) = self.input_buffer[0..4].parse::<i32>() {
                                 if let Ok(month) = self.input_buffer[4..6].parse::<u32>() {
-                                    if year >= 2000 && year <= 2100 && [1, 3, 5, 7, 9, 11].contains(&month) {
+                                    if year >= 1958 && month >= 1 && month <= 12 && month % 2 == 1 {
                                         self.basho_id = self.input_buffer.clone();
                                         self.basho_changed = true;
                                         self.needs_reload = true;
@@ -377,7 +379,7 @@ impl App {
                             }
                         }
                         if !valid {
-                            self.input_error = Some("Please enter a valid date.".to_string());
+                            self.input_error = Some("Invalid day/basho".to_string());
                         }
                     },
                     KeyCode::Esc => {
