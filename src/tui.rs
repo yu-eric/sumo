@@ -3,6 +3,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use chrono::Utc;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout},
@@ -49,6 +50,10 @@ pub struct App {
     pub show_head_to_head: bool,
     pub head_to_head_data: Option<HeadToHeadResponse>,
     pub requested_head_to_head: Option<(u32, u32)>, // (rikishi_id, opponent_id)
+    pub loading_overlay: Option<String>,
+    pub status_message: Option<String>,
+    pub basho_changed: bool,
+    pub input_error: Option<String>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -83,6 +88,10 @@ impl App {
             show_head_to_head: false,
             head_to_head_data: None,
             requested_head_to_head: None,
+            loading_overlay: None,
+            status_message: None,
+            basho_changed: false,
+            input_error: None,
         }
     }
 
@@ -98,7 +107,28 @@ impl App {
     }
 
     pub fn set_torikumi(&mut self, torikumi: Vec<TorikumiEntry>) {
+        let len = torikumi.len();
         self.torikumi = Some(torikumi);
+
+        if self.current_view == AppView::Torikumi {
+            if len == 0 {
+                self.selected_index = 0;
+                self.scroll_offset = 0;
+            } else if self.selected_index >= len {
+                self.selected_index = len - 1;
+                if self.scroll_offset > self.selected_index {
+                    self.scroll_offset = self.selected_index;
+                }
+            }
+        }
+    }
+
+    pub fn clear_torikumi(&mut self) {
+        self.torikumi = None;
+        if self.current_view == AppView::Torikumi {
+            self.selected_index = 0;
+            self.scroll_offset = 0;
+        }
     }
 
     fn recompute_records(&mut self) {
@@ -134,6 +164,7 @@ impl App {
                     KeyCode::Char('c') => {
                         self.input_mode = InputMode::EditingDay;
                         self.input_buffer.clear();
+                        self.input_error = None;
                     },
                     KeyCode::Char('v') => {
                         self.input_mode = InputMode::SelectingDivision;
@@ -141,10 +172,12 @@ impl App {
                         self.division_selector_index = DIVISIONS.iter()
                             .position(|&d| d == self.division)
                             .unwrap_or(0);
+                        self.input_error = None;
                     },
                     KeyCode::Char('b') => {
                         self.input_mode = InputMode::EditingBasho;
                         self.input_buffer.clear();
+                        self.input_error = None;
                     },
                     KeyCode::Char('1') => {
                         self.current_view = AppView::Torikumi;
@@ -260,23 +293,31 @@ impl App {
                 match key {
                     KeyCode::Char(c) if c.is_ascii_digit() => {
                         self.input_buffer.push(c);
+                        self.input_error = None;
                     },
                     KeyCode::Backspace => {
                         self.input_buffer.pop();
+                        self.input_error = None;
                     },
                     KeyCode::Enter => {
                         if let Ok(day) = self.input_buffer.parse::<u8>() {
                             if day >= 1 && day <= 15 {
                                 self.day = day;
                                 self.needs_reload = true;
+                                self.input_mode = InputMode::Normal;
+                                self.input_buffer.clear();
+                                self.input_error = None;
+                            } else {
+                                self.input_error = Some("Please enter a valid day.".to_string());
                             }
+                        } else {
+                            self.input_error = Some("Please enter a valid day.".to_string());
                         }
-                        self.input_mode = InputMode::Normal;
-                        self.input_buffer.clear();
                     },
                     KeyCode::Esc => {
                         self.input_mode = InputMode::Normal;
                         self.input_buffer.clear();
+                        self.input_error = None;
                     },
                     _ => {}
                 }
@@ -297,9 +338,11 @@ impl App {
                         self.division = DIVISIONS[self.division_selector_index].to_string();
                         self.needs_reload = true;
                         self.input_mode = InputMode::Normal;
+                        self.input_error = None;
                     },
                     KeyCode::Esc => {
                         self.input_mode = InputMode::Normal;
+                        self.input_error = None;
                     },
                     _ => {}
                 }
@@ -309,29 +352,38 @@ impl App {
                     KeyCode::Char(c) if c.is_ascii_digit() => {
                         if self.input_buffer.len() < 6 {
                             self.input_buffer.push(c);
+                            self.input_error = None;
                         }
                     },
                     KeyCode::Backspace => {
                         self.input_buffer.pop();
+                        self.input_error = None;
                     },
                     KeyCode::Enter => {
+                        let mut valid = false;
                         if self.input_buffer.len() == 6 {
                             if let Ok(year) = self.input_buffer[0..4].parse::<i32>() {
                                 if let Ok(month) = self.input_buffer[4..6].parse::<u32>() {
-                                    // Valid basho months are 1, 3, 5, 7, 9, 11
                                     if year >= 2000 && year <= 2100 && [1, 3, 5, 7, 9, 11].contains(&month) {
                                         self.basho_id = self.input_buffer.clone();
+                                        self.basho_changed = true;
                                         self.needs_reload = true;
+                                        self.input_mode = InputMode::Normal;
+                                        self.input_buffer.clear();
+                                        self.input_error = None;
+                                        valid = true;
                                     }
                                 }
                             }
                         }
-                        self.input_mode = InputMode::Normal;
-                        self.input_buffer.clear();
+                        if !valid {
+                            self.input_error = Some("Please enter a valid date.".to_string());
+                        }
                     },
                     KeyCode::Esc => {
                         self.input_mode = InputMode::Normal;
                         self.input_buffer.clear();
+                        self.input_error = None;
                     },
                     _ => {}
                 }
@@ -356,10 +408,19 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let basho_month: u32 = app.basho_id[4..6].parse().unwrap_or(9);
     let basho_name = crate::api::SumoApi::get_basho_name(basho_month);
     
-    let header = Paragraph::new(format!(
-        "{} Results - {} {} - Day {}",
-        basho_name, basho_date, app.division, app.day
-    ))
+    let header_text = if basho_has_started(app) {
+        format!(
+            "{} - {} {} - Day {}",
+            basho_name, basho_date, app.division, app.day
+        )
+    } else {
+        format!(
+            "{} - {} {} (Upcoming)",
+            basho_name, basho_date, app.division
+        )
+    };
+
+    let header = Paragraph::new(header_text)
     .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
     .alignment(Alignment::Center)
     .block(Block::default().borders(Borders::ALL).title("Sumo TUI"));
@@ -375,7 +436,12 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     // Footer
     let footer_text = "q: Quit | 1: Torikumi | 2: Banzuke | 3: Info | c: Day | v: Division | b: Basho | h: Help";
-    let footer = Paragraph::new(footer_text)
+    let mut footer_lines = vec![Line::from(footer_text)];
+    if let Some(status) = &app.status_message {
+        footer_lines.push(Line::from(status.clone()));
+    }
+
+    let footer = Paragraph::new(footer_lines)
         .style(Style::default().fg(Color::Cyan))
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::ALL));
@@ -389,9 +455,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     
     // Input popups
     match app.input_mode {
-        InputMode::EditingDay => render_input_popup(f, "Day (1-15)", &app.input_buffer),
+        InputMode::EditingDay => render_input_popup(f, "Day (1-15)", &app.input_buffer, app.input_error.as_deref()),
         InputMode::SelectingDivision => render_division_selector(f, app.division_selector_index),
-        InputMode::EditingBasho => render_input_popup(f, "Basho (YYYYMM, e.g., 202501)", &app.input_buffer),
+        InputMode::EditingBasho => render_input_popup(f, "Basho (YYYYMM, e.g., 202501)", &app.input_buffer, app.input_error.as_deref()),
         InputMode::Normal => {},
     }
     
@@ -408,10 +474,37 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             render_head_to_head(f, h2h);
         }
     }
+
+    if let Some(message) = &app.loading_overlay {
+        let area = centered_rect(50, 20, f.area());
+        f.render_widget(Clear, area);
+
+        let paragraph = Paragraph::new(message.clone())
+            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL).title("Please wait"));
+
+        f.render_widget(paragraph, area);
+    }
 }
 
 fn render_torikumi(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     if let Some(torikumi) = &app.torikumi {
+        if torikumi.is_empty() {
+            let message = if basho_has_started(app) {
+                "No matches available for the selected day."
+            } else {
+                "This basho has not started yet."
+            };
+
+            let paragraph = Paragraph::new(message)
+                .block(Block::default().borders(Borders::ALL).title("Daily Matches"))
+                .alignment(Alignment::Center);
+
+            f.render_widget(paragraph, area);
+            return;
+        }
+
         let visible_height = area.height.saturating_sub(3) as usize; // Account for borders and header
         let start_index = app.scroll_offset;
         let end_index = (start_index + visible_height).min(torikumi.len());
@@ -696,11 +789,11 @@ fn render_help_popup(f: &mut Frame) {
     f.render_widget(paragraph, area);
 }
 
-fn render_input_popup(f: &mut Frame, prompt: &str, input: &str) {
+fn render_input_popup(f: &mut Frame, prompt: &str, input: &str, error: Option<&str>) {
     let area = centered_rect(50, 20, f.area());
     f.render_widget(Clear, area);
 
-    let text = vec![
+    let mut text = vec![
         Line::from(prompt),
         Line::from(""),
         Line::from(vec![
@@ -711,6 +804,11 @@ fn render_input_popup(f: &mut Frame, prompt: &str, input: &str) {
         Line::from(""),
         Line::from("Press Enter to confirm, Esc to cancel"),
     ];
+
+    if let Some(err) = error {
+        text.push(Line::from(""));
+        text.push(Line::from(Span::styled(err, Style::default().fg(Color::Red))));
+    }
 
     let paragraph = Paragraph::new(text)
         .block(Block::default().borders(Borders::ALL).title("Input"))
@@ -1015,6 +1113,15 @@ fn render_head_to_head(f: &mut Frame, h2h: &HeadToHeadResponse) {
         .wrap(ratatui::widgets::Wrap { trim: true });
 
     f.render_widget(paragraph, area);
+}
+
+fn basho_has_started(app: &App) -> bool {
+    if let Some(basho) = &app.basho {
+        if let Some(start) = basho.start_date_naive() {
+            return Utc::now().date_naive() >= start;
+        }
+    }
+    true
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: ratatui::layout::Rect) -> ratatui::layout::Rect {

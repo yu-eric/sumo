@@ -37,6 +37,16 @@ pub struct SanshoEntry {
     pub shikona_jp: String,
 }
 
+impl Basho {
+    /// Parse the start date string (if present) into a NaiveDate without time information.
+    pub fn start_date_naive(&self) -> Option<chrono::NaiveDate> {
+        self.start_date
+            .as_deref()
+            .and_then(|s| s.split('T').next())
+            .and_then(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct BanzukeResponse {
     #[serde(rename = "bashoId")]
